@@ -139,6 +139,37 @@ function App() {
     return `${d}/${m}/${y}`;
   };
 
+  const getRegistrationStatus = () => {
+    if (!tournament || (!tournament.startTime && !tournament.endTime)) return { open: true };
+    const now = new Date();
+    
+    if (tournament.startTime) {
+      const start = new Date(tournament.startTime);
+      if (now < start) {
+        return { 
+          open: false, 
+          type: 'future',
+          message: `Hệ thống sẽ mở đăng ký vào lúc ${start.toLocaleString('vi-VN', { hour: '2-digit', minute: '2-digit', day: '2-digit', month: '2-digit', year: 'numeric' })}` 
+        };
+      }
+    }
+    
+    if (tournament.endTime) {
+      const end = new Date(tournament.endTime);
+      if (now > end) {
+        return { 
+          open: false, 
+          type: 'expired',
+          message: `Hệ thống đã khóa đăng ký từ lúc ${end.toLocaleString('vi-VN', { hour: '2-digit', minute: '2-digit', day: '2-digit', month: '2-digit', year: 'numeric' })}` 
+        };
+      }
+    }
+    
+    return { open: true };
+  };
+
+  const regStatus = getRegistrationStatus();
+
   const showToast = (type, title, message) => {
     setToast({ show: true, type, title, message });
     setTimeout(() => setToast(prev => ({...prev, show: false})), 4000);
@@ -232,6 +263,11 @@ function App() {
   const saveAthlete = (e) => {
     e.preventDefault();
     
+    if (!regStatus.open) {
+      showToast('error', 'Hết hạn đăng ký', regStatus.message);
+      return;
+    }
+
     if(!clubName.trim()){
       showToast('error', 'Thiếu thông tin', "Vui lòng nhập Tên Câu lạc bộ / Đoàn ở mục (1) trên cùng trước khi thêm VĐV.");
       return;
@@ -387,6 +423,11 @@ function App() {
   };
 
   const submitToCloud = async () => {
+    if (!regStatus.open) {
+      showToast('error', 'Hết hạn đăng ký', regStatus.message);
+      return;
+    }
+
     if (!clubName.trim()) {
       showToast('error', 'Cảnh báo', 'Vui lòng nhập tên Câu lạc bộ / Đoàn');
       return;
@@ -532,6 +573,17 @@ function App() {
           </div>
         ) : (
           <div className="space-y-4 sm:space-y-6 animate-fade-in pb-10">
+            {/* Registration Status Banner */}
+            {!regStatus.open && (
+              <div className={`p-4 rounded-2xl border flex items-start gap-3 shadow-sm ${regStatus.type === 'future' ? 'bg-indigo-50 border-indigo-200 text-indigo-800' : 'bg-rose-50 border-rose-200 text-rose-800'}`}>
+                <AlertCircle className={`w-6 h-6 shrink-0 ${regStatus.type === 'future' ? 'text-indigo-600' : 'text-rose-600'}`} />
+                <div>
+                  <h3 className="font-bold text-base">Thông báo từ Ban tổ chức</h3>
+                  <p className="text-sm opacity-90">{regStatus.message}</p>
+                </div>
+              </div>
+            )}
+
             {/* Form General Info */}
             <div className="bg-white p-4 sm:p-6 rounded-2xl shadow-sm border border-slate-200">
               <h3 className="text-base sm:text-lg font-bold text-slate-800 mb-4 border-b pb-2 flex items-center gap-2">
@@ -697,7 +749,7 @@ function App() {
 
                     <div className="flex gap-2 w-full sm:w-auto">
                       {editingId && <button type="button" onClick={() => {setEditingId(null); setCurrentAthlete(initialAthleteState); setEventSearch('');}} className="flex-1 sm:flex-none px-4 py-2 text-sm text-slate-600 bg-white border border-slate-200 hover:bg-slate-100 rounded-md sm:rounded-lg transition font-medium justify-center flex">Hủy</button>}
-                      <button type="submit" className="flex-1 sm:flex-none px-6 py-2 text-sm bg-blue-600 hover:bg-blue-700 text-white rounded-md sm:rounded-lg font-semibold shadow-sm transition flex items-center justify-center gap-2">
+                      <button type="submit" disabled={!regStatus.open} className="flex-1 sm:flex-none px-6 py-2 text-sm bg-blue-600 hover:bg-blue-700 text-white rounded-md sm:rounded-lg font-semibold shadow-sm transition flex items-center justify-center gap-2 disabled:bg-slate-300 disabled:cursor-not-allowed">
                          {editingId ? 'Lưu VĐV' : 'Thêm VĐV'}
                       </button>
                     </div>
@@ -784,7 +836,7 @@ function App() {
                 <button onClick={exportExcel} className="w-full sm:w-auto px-5 sm:px-6 py-3 bg-emerald-50 text-emerald-700 border border-emerald-200 hover:bg-emerald-100 hover:border-emerald-300 rounded-xl font-bold transition flex items-center justify-center gap-2">
                   <DownloadCloud className="w-5 h-5" /> Xuất Excel
                 </button>
-                <button onClick={submitToCloud} disabled={submitting} className="w-full sm:w-auto px-6 sm:px-8 py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-bold transition shadow-lg shadow-blue-200/50 flex items-center justify-center gap-2 disabled:bg-slate-400 disabled:shadow-none focus:ring-4 focus:ring-blue-100">
+                <button onClick={submitToCloud} disabled={submitting || !regStatus.open} className="w-full sm:w-auto px-6 sm:px-8 py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-bold transition shadow-lg shadow-blue-200/50 flex items-center justify-center gap-2 disabled:bg-slate-400 disabled:shadow-none focus:ring-4 focus:ring-blue-100">
                   <Save className="w-5 h-5 flex-shrink-0" /> <span className="whitespace-nowrap">{submitting ? 'ĐANG XỬ LÝ...' : 'NỘP LÊN BTC'}</span>
                 </button>
               </div>
