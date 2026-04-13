@@ -9,50 +9,83 @@ const SUPABASE_KEY = "sb_publishable_xbGNC6A3fRVrtr7YEmV8tA_EwyB2t39";
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
 function App() {
-  const [tournament, setTournament] = useState(() => {
-    const saved = localStorage.getItem('karate_tournament');
-    return saved ? JSON.parse(saved) : null;
-  });
+  const [tournament, setTournament] = useState(null);
   const [errorMsg, setErrorMsg] = useState("");
+  const [isLoading, setIsLoading] = useState(true);
   
   // Organization Info
-  const [clubName, setClubName] = useState(() => localStorage.getItem('karate_clubName') || '');
-  const [teamLeader, setTeamLeader] = useState(() => localStorage.getItem('karate_teamLeader') || '');
-  const [coach1, setCoach1] = useState(() => localStorage.getItem('karate_coach1') || '');
-  const [coach2, setCoach2] = useState(() => localStorage.getItem('karate_coach2') || '');
-  const [coach3, setCoach3] = useState(() => localStorage.getItem('karate_coach3') || '');
+  const [clubName, setClubName] = useState('');
+  const [teamLeader, setTeamLeader] = useState('');
+  const [coach1, setCoach1] = useState('');
+  const [coach2, setCoach2] = useState('');
+  const [coach3, setCoach3] = useState('');
 
-  const [athletes, setAthletes] = useState(() => {
-    const saved = localStorage.getItem('karate_athletes');
-    return saved ? JSON.parse(saved) : [];
-  });
+  const [athletes, setAthletes] = useState([]);
   const [submitting, setSubmitting] = useState(false);
   const [editingId, setEditingId] = useState(null);
   const [toast, setToast] = useState({ show: false, type: 'success', title: '', message: '' });
   const [confirmModal, setConfirmModal] = useState({ show: false, message: '', onConfirm: null });
   const [eventSearch, setEventSearch] = useState('');
   const [showEventList, setShowEventList] = useState(false);
-
-  // Persistence Effects
-  const isFirstRender = useRef(true);
-  useEffect(() => {
-    if (isFirstRender.current) {
-      isFirstRender.current = false;
-      return;
-    }
-    localStorage.setItem('karate_tournament', JSON.stringify(tournament));
-    localStorage.setItem('karate_athletes', JSON.stringify(athletes));
-    localStorage.setItem('karate_clubName', clubName);
-    localStorage.setItem('karate_teamLeader', teamLeader);
-    localStorage.setItem('karate_coach1', coach1);
-    localStorage.setItem('karate_coach2', coach2);
-    localStorage.setItem('karate_coach3', coach3);
-  }, [tournament, athletes, clubName, teamLeader, coach1, coach2, coach3]);
   
   const initialAthleteState = { name: '', gender: 'male', birthDateStr: '', eventId: '', weight: '', isTeam: false };
   const [currentAthlete, setCurrentAthlete] = useState(initialAthleteState);
 
   const fileInputRef = useRef(null);
+
+  // Auto-load tournament if slug is in URL
+  useEffect(() => {
+    const loadTournamentFromUrl = async () => {
+      // Decode and clean path
+      const fullPath = decodeURIComponent(window.location.pathname);
+      const pathParts = fullPath.split('/').filter(Boolean);
+      
+      if (pathParts.length > 0) {
+        let slug = pathParts[0];
+        // Normalize: replace spaces or multiple hyphens with a single hyphen to match DB
+        const normalizedSlug = slug.trim().replace(/[\s_]+/g, '-').replace(/-+/g, '-');
+        
+        setIsLoading(true);
+        try {
+          // Try fetching with original slug first
+          let { data, error } = await supabase
+            .from('tournaments_config')
+            .select('data')
+            .eq('slug', slug)
+            .maybeSingle();
+
+          // If not found, try with normalized slug
+          if (!data && !error) {
+            const retry = await supabase
+              .from('tournaments_config')
+              .select('data')
+              .eq('slug', normalizedSlug)
+              .maybeSingle();
+            data = retry.data;
+            error = retry.error;
+          }
+
+          if (error) throw error;
+          
+          if (data && data.data) {
+            setTournament(data.data);
+            showToast('success', 'Thành công', 'Đã tải thông tin giải đấu từ liên kết.');
+          } else {
+            setErrorMsg(`Không tìm thấy giải đấu: "${slug}"`);
+          }
+        } catch (err) {
+          console.error("Error loading tournament:", err);
+          setErrorMsg("Lỗi khi kết nối dữ liệu. Vui lòng kiểm tra mạng hoặc thử lại sau.");
+        } finally {
+          setIsLoading(false);
+        }
+      } else {
+        setIsLoading(false);
+      }
+    };
+
+    loadTournamentFromUrl();
+  }, []);
 
   const parseVietnameseDate = (str) => {
     if (!str) return null;
@@ -119,14 +152,6 @@ function App() {
 
   const resetApp = () => {
     showConfirm("Bạn có chắc muốn thoát giải đấu này? Dữ liệu chưa nộp sẽ bị mất.", () => {
-      localStorage.removeItem('karate_tournament');
-      localStorage.removeItem('karate_athletes');
-      localStorage.removeItem('karate_clubName');
-      localStorage.removeItem('karate_teamLeader');
-      localStorage.removeItem('karate_coach1');
-      localStorage.removeItem('karate_coach2');
-      localStorage.removeItem('karate_coach3');
-      
       setTournament(null);
       setAthletes([]);
       setClubName("");
@@ -445,7 +470,14 @@ function App() {
       </header>
 
       <main className="max-w-6xl mx-auto mt-4 sm:mt-8 px-2 sm:px-4">
-        {!tournament ? (
+        {isLoading ? (
+          <div className="bg-white p-6 sm:p-10 rounded-2xl shadow-xl text-center border border-slate-100 max-w-2xl mx-auto mt-6 sm:mt-10 animate-fade-in mx-2">
+            <div className="flex flex-col items-center gap-4">
+              <div className="w-12 h-12 border-4 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
+              <p className="text-slate-600 font-medium">Đang tải thông tin giải đấu...</p>
+            </div>
+          </div>
+        ) : !tournament ? (
           <div className="bg-white p-6 sm:p-10 rounded-2xl shadow-xl text-center border border-slate-100 max-w-2xl mx-auto mt-6 sm:mt-10 animate-fade-in mx-2">
             <div className="mb-4 sm:mb-6 flex justify-center">
               <div className="w-20 h-20 sm:w-24 sm:h-24 bg-blue-50 text-blue-500 rounded-full flex items-center justify-center">
