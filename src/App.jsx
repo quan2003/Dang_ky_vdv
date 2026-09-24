@@ -34,7 +34,7 @@ function App() {
   const [eventSearch, setEventSearch] = useState('');
   const [showEventList, setShowEventList] = useState(false);
   
-  const initialAthleteState = { name: '', gender: 'male', birthDateStr: '', eventId: '', weight: '', isTeam: false };
+  const initialAthleteState = { name: '', gender: 'male', birthDateStr: '', eventId: '', weight: '', isTeam: false, teamCode: '' };
   const [currentAthlete, setCurrentAthlete] = useState(initialAthleteState);
 
   const fileInputRef = useRef(null);
@@ -117,7 +117,7 @@ function App() {
     if (!str) return null;
     const clean = str.trim();
     if (/^\d{4}$/.test(clean)) return `${clean}-01-01`; // YYYY
-    const parts = clean.split(/[-\/.]/);
+    const parts = clean.split(/[-/.]/);
     if (parts.length === 3) {
       let d = parseInt(parts[0], 10);
       let m = parseInt(parts[1], 10);
@@ -140,26 +140,28 @@ function App() {
   };
 
   const getRegistrationStatus = () => {
-    if (!tournament || (!tournament.startTime && !tournament.endTime)) return { open: true };
+    if (!tournament) return { open: true };
     const now = new Date();
     
-    if (tournament.startTime) {
+    if (tournament.startTime && tournament.startTime !== "") {
       const start = new Date(tournament.startTime);
       if (now < start) {
         return { 
           open: false, 
           type: 'future',
+          date: start,
           message: `Hệ thống sẽ mở đăng ký vào lúc ${start.toLocaleString('vi-VN', { hour: '2-digit', minute: '2-digit', day: '2-digit', month: '2-digit', year: 'numeric' })}` 
         };
       }
     }
     
-    if (tournament.endTime) {
+    if (tournament.endTime && tournament.endTime !== "") {
       const end = new Date(tournament.endTime);
       if (now > end) {
         return { 
           open: false, 
           type: 'expired',
+          date: end,
           message: `Hệ thống đã khóa đăng ký từ lúc ${end.toLocaleString('vi-VN', { hour: '2-digit', minute: '2-digit', day: '2-digit', month: '2-digit', year: 'numeric' })}` 
         };
       }
@@ -246,16 +248,23 @@ function App() {
     return event ? event.name : "Không xác định";
   };
 
+  const isTeamEvent = (event) => {
+    if (!event) return false;
+    const name = String(event.name || '').toLowerCase();
+    return event.isTeamEvent === true
+      || event.isTeam === true
+      || name.includes('đồng đội')
+      || name.includes('hỗn hợp');
+  };
+
   const handleEventSelect = (ev) => {
-    let isTeam = currentAthlete.isTeam;
-    // Auto tick "Đồng đội" if event name contains corresponding keywords
-    if (ev && ev.name) {
-      const nameL = ev.name.toLowerCase();
-      if (nameL.includes('đồng đội') || nameL.includes('hỗn hợp')) {
-        isTeam = true;
-      }
-    }
-    setCurrentAthlete({ ...currentAthlete, eventId: ev.id, isTeam });
+    const isTeam = isTeamEvent(ev);
+    setCurrentAthlete({
+      ...currentAthlete,
+      eventId: ev.id,
+      isTeam,
+      teamCode: isTeam ? currentAthlete.teamCode : ''
+    });
     setEventSearch(ev.name);
     setShowEventList(false);
   };
@@ -290,6 +299,10 @@ function App() {
       showToast('error', 'Thiếu cân nặng', "Bạn đăng ký nội dung Đối kháng, vui lòng nhập Cân nặng thực tế.");
       return;
     }
+    if(currentAthlete.isTeam && !currentAthlete.teamCode.trim()){
+      showToast('error', 'Thiếu mã đội', 'Vui lòng nhập Mã đội. Các VĐV cùng CLB và cùng mã sẽ được xếp vào cùng một đội.');
+      return;
+    }
     
     // Parse valid Date
     const isoDate = parseVietnameseDate(currentAthlete.birthDateStr);
@@ -304,7 +317,8 @@ function App() {
       eventName: getEventName(currentAthlete.eventId),
       weight: currentAthlete.weight ? parseFloat(currentAthlete.weight) : null,
       birthDate: isoDate,
-      isTeam: currentAthlete.isTeam || false
+      isTeam: currentAthlete.isTeam || false,
+      teamCode: currentAthlete.isTeam ? currentAthlete.teamCode.trim() : ''
     };
 
     if(editingId) {
@@ -320,7 +334,7 @@ function App() {
 
   const editAthlete = (a) => {
     setEditingId(a.id);
-    setCurrentAthlete({ ...a, birthDateStr: formatVietnameseDate(a.birthDate) });
+    setCurrentAthlete({ ...a, teamCode: a.teamCode || '', birthDateStr: formatVietnameseDate(a.birthDate) });
     setEventSearch(a.eventName || '');
   };
 
@@ -379,7 +393,7 @@ function App() {
     XLSX.utils.book_append_sheet(wb, infoSheet, "Thông tin");
 
     // Sheet 2: Danh sách VĐV
-    const athleteHeaders = ["STT", "Họ tên", "Ngày sinh", "Giới tính", "CLB", "Nội dung", "Cân nặng (kg)", "Hạt giống", "Đồng đội"];
+    const athleteHeaders = ["STT", "Họ tên", "Ngày sinh", "Giới tính", "CLB", "Nội dung", "Cân nặng (kg)", "Hạt giống", "Đồng đội", "Mã đội"];
     const athleteRows = exportDataStr.athletes.map((a, i) => {
       let birthDisplay = "";
       if (a.birthDate) {
@@ -398,11 +412,12 @@ function App() {
         a.weight || "",
         "", // seed
         a.isTeam ? "Có" : "Không",
+        a.isTeam ? a.teamCode || "" : "",
       ];
     });
     const athleteData = [athleteHeaders, ...athleteRows];
     const athleteSheet = XLSX.utils.aoa_to_sheet(athleteData);
-    athleteSheet["!cols"] = [{ wch: 5 }, { wch: 25 }, { wch: 12 }, { wch: 10 }, { wch: 25 }, { wch: 30 }, { wch: 12 }, { wch: 10 }, { wch: 10 }];
+    athleteSheet["!cols"] = [{ wch: 5 }, { wch: 25 }, { wch: 12 }, { wch: 10 }, { wch: 25 }, { wch: 30 }, { wch: 12 }, { wch: 10 }, { wch: 10 }, { wch: 12 }];
     XLSX.utils.book_append_sheet(wb, athleteSheet, "Danh sách VĐV");
 
     // Sheet 3: Dữ liệu JSON (để Admin import)
@@ -661,7 +676,7 @@ function App() {
                   <Info className="w-5 h-5 shrink-0 mt-0.5 text-amber-600" />
                   <p className="text-[13px] sm:text-sm leading-relaxed">
                     <strong className="font-bold text-amber-900 block mb-0.5">Lưu ý: Một VĐV đăng ký nhiều Nội dung?</strong>
-                    Mỗi lượt đấu là <strong>1 dòng riêng biệt</strong>. Nếu VĐV đấu 2 nội dung (VD: Cá nhân & Đồng đội), HLV vui lòng <strong>nhập tên và bấm [Thêm VĐV] 2 lần</strong> để tạo thành 2 dòng dưới danh sách. Mục đích của ô tick Đồng Đội bên dưới chỉ để xác nhận vé thi đó là đội nhóm!
+                    Mỗi lượt đấu là <strong>1 dòng riêng biệt</strong>. Nếu VĐV đấu 2 nội dung (VD: Cá nhân & Đồng đội), HLV vui lòng <strong>nhập tên và bấm [Thêm VĐV] 2 lần</strong> để tạo thành 2 dòng dưới danh sách. Với nội dung đồng đội, hãy nhập cùng <strong>Mã đội</strong> cho các thành viên thuộc cùng một đội.
                   </p>
                 </div>
 
@@ -715,7 +730,7 @@ function App() {
                       onChange={e => {
                         setEventSearch(e.target.value);
                         setShowEventList(true);
-                        setCurrentAthlete({...currentAthlete, eventId: ''});
+                        setCurrentAthlete({...currentAthlete, eventId: '', isTeam: false, teamCode: ''});
                       }}
                       onFocus={() => setShowEventList(true)}
                       onBlur={() => setTimeout(() => setShowEventList(false), 200)}
@@ -742,10 +757,36 @@ function App() {
                   </div>
                   
                   <div className="sm:col-span-2 md:col-span-12 flex flex-col sm:flex-row justify-between items-center gap-3 mt-3 p-3 bg-white rounded-xl border border-slate-200">
-                    <label className="flex items-center gap-2 cursor-pointer select-none">
-                      <input type="checkbox" className="w-5 h-5 text-blue-600 rounded border-slate-300 cursor-pointer accent-blue-600" checked={currentAthlete.isTeam} onChange={e => setCurrentAthlete({...currentAthlete, isTeam: e.target.checked})} />
-                      <span className="text-sm font-semibold text-slate-700">VĐV Thi đấu Đồng Đội / Hỗn Hợp</span>
-                    </label>
+                    <div className="flex flex-col sm:flex-row items-stretch sm:items-end gap-3 w-full sm:w-auto">
+                      <label className="flex items-center gap-2 cursor-pointer select-none min-h-10">
+                        <input
+                          type="checkbox"
+                          className="w-5 h-5 text-blue-600 rounded border-slate-300 cursor-pointer accent-blue-600"
+                          checked={currentAthlete.isTeam}
+                          onChange={e => setCurrentAthlete({
+                            ...currentAthlete,
+                            isTeam: e.target.checked,
+                            teamCode: e.target.checked ? currentAthlete.teamCode : ''
+                          })}
+                        />
+                        <span className="text-sm font-semibold text-slate-700">VĐV Thi đấu Đồng Đội / Hỗn Hợp</span>
+                      </label>
+                      {currentAthlete.isTeam && (
+                        <div className="w-full sm:w-44">
+                          <label className="block text-xs font-semibold text-slate-600 mb-1">
+                            Mã đội <span className="text-red-500">*</span>
+                          </label>
+                          <input
+                            type="text"
+                            value={currentAthlete.teamCode}
+                            onChange={e => setCurrentAthlete({...currentAthlete, teamCode: e.target.value})}
+                            className="w-full px-3 py-2 border border-slate-300 rounded-md sm:rounded-lg text-sm focus:border-blue-500 outline-none uppercase"
+                            placeholder="VD: 1, 2, A"
+                            autoComplete="off"
+                          />
+                        </div>
+                      )}
+                    </div>
 
                     <div className="flex gap-2 w-full sm:w-auto">
                       {editingId && <button type="button" onClick={() => {setEditingId(null); setCurrentAthlete(initialAthleteState); setEventSearch('');}} className="flex-1 sm:flex-none px-4 py-2 text-sm text-slate-600 bg-white border border-slate-200 hover:bg-slate-100 rounded-md sm:rounded-lg transition font-medium justify-center flex">Hủy</button>}
@@ -759,7 +800,7 @@ function App() {
 
               {/* Table */}
               <div className="overflow-x-auto border border-slate-200 rounded-xl bg-white scrollbar-thin scrollbar-thumb-slate-200">
-                <table className="w-full text-left text-sm min-w-[600px]">
+                <table className="w-full text-left text-sm min-w-[700px]">
                   <thead className="bg-slate-100/80 text-slate-700 border-b">
                     <tr>
                       <th className="px-3 sm:px-4 py-3 font-semibold w-12 text-center text-xs sm:text-sm">STT</th>
@@ -769,13 +810,14 @@ function App() {
                       <th className="px-3 sm:px-4 py-3 font-semibold text-xs sm:text-sm">Nội dung</th>
                       <th className="px-3 sm:px-4 py-3 font-semibold text-center text-xs sm:text-sm w-16">Kg</th>
                       <th className="px-3 sm:px-4 py-3 font-semibold text-center text-xs sm:text-sm">Đồng Đội</th>
+                      <th className="px-3 sm:px-4 py-3 font-semibold text-center text-xs sm:text-sm">Mã đội</th>
                       <th className="px-3 sm:px-4 py-3 font-semibold text-center text-xs sm:text-sm w-20">Thao tác</th>
                     </tr>
                   </thead>
                   <tbody>
                     {athletes.length === 0 ? (
                       <tr>
-                        <td colSpan="7" className="px-4 py-10 text-center text-slate-400 font-medium">Chưa có VĐV nào được thêm.</td>
+                        <td colSpan="9" className="px-4 py-10 text-center text-slate-400 font-medium">Chưa có VĐV nào được thêm.</td>
                       </tr>
                     ) : (
                       athletes.map((a, i) => (
@@ -790,6 +832,9 @@ function App() {
                           <td className="px-3 sm:px-4 py-2 sm:py-3 text-center font-medium opacity-80">{a.weight ? a.weight : '-'}</td>
                           <td className="px-3 sm:px-4 py-2 sm:py-3 text-center">
                             {a.isTeam ? <span className="bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded text-xs font-bold">✓ Có</span> : <span className="text-slate-300">-</span>}
+                          </td>
+                          <td className="px-3 sm:px-4 py-2 sm:py-3 text-center font-bold text-slate-700">
+                            {a.isTeam ? a.teamCode || '-' : '-'}
                           </td>
                           <td className="px-3 sm:px-4 py-2 sm:py-3 text-center flex justify-center gap-1 sm:gap-2 mt-1">
                             <button onClick={() => editAthlete(a)} className="text-blue-500 hover:text-blue-700 hover:bg-blue-50 p-1.5 rounded-lg transition-colors" title="Sửa"><Edit2 className="w-4 h-4" /></button>
