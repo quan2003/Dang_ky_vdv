@@ -1,7 +1,8 @@
 import { useState, useRef, useEffect } from 'react';
-import { Upload, X, Save, Edit2, Trash2, DownloadCloud, FileSpreadsheet, CheckCircle2, AlertCircle, Plus, Info } from 'lucide-react';
+import { Upload, X, Save, Edit2, Trash2, DownloadCloud, FileSpreadsheet, CheckCircle2, AlertCircle, Plus, Info, ImagePlus } from 'lucide-react';
 import { createClient } from '@supabase/supabase-js';
 import * as XLSX from 'xlsx';
+import { createStableId, getKsportApiUrl, getOrCreateClubId, uploadPendingRegistrationPhoto, validatePhotoFile } from './services/registrationIdentity';
 
 // Supabase Init
 const SUPABASE_URL = "https://qjipcijesxlwnqdrsljl.supabase.co";
@@ -36,8 +37,11 @@ function App() {
   
   const initialAthleteState = { name: '', gender: 'male', birthDateStr: '', eventId: '', weight: '', isTeam: false };
   const [currentAthlete, setCurrentAthlete] = useState(initialAthleteState);
+  const [currentPhotoFile, setCurrentPhotoFile] = useState(null);
 
   const fileInputRef = useRef(null);
+  const photoInputRef = useRef(null);
+  const pendingPhotoFilesRef = useRef(new Map());
   const isFirstRender = useRef(true);
 
   // Persistence Effects
@@ -117,7 +121,7 @@ function App() {
     if (!str) return null;
     const clean = str.trim();
     if (/^\d{4}$/.test(clean)) return `${clean}-01-01`; // YYYY
-    const parts = clean.split(/[-\/.]/);
+    const parts = clean.split(/[-/.]/);
     if (parts.length === 3) {
       let d = parseInt(parts[0], 10);
       let m = parseInt(parts[1], 10);
@@ -298,14 +302,20 @@ function App() {
       return;
     }
 
+    const athleteId = currentAthlete.athleteId || createStableId();
     const athleteData = {
       ...currentAthlete,
       id: editingId || 'temp_' + Date.now().toString(36),
+      athleteId,
+      clubId: currentAthlete.clubId || getOrCreateClubId(clubName),
       eventName: getEventName(currentAthlete.eventId),
       weight: currentAthlete.weight ? parseFloat(currentAthlete.weight) : null,
       birthDate: isoDate,
-      isTeam: currentAthlete.isTeam || false
+      isTeam: currentAthlete.isTeam || false,
+      photoStatus: currentPhotoFile ? 'pending_upload' : (currentAthlete.photoStatus || 'not_provided'),
     };
+
+    if (currentPhotoFile) pendingPhotoFilesRef.current.set(athleteId, currentPhotoFile);
 
     if(editingId) {
       setAthletes(athletes.map(a => a.id === editingId ? athleteData : a));
@@ -315,13 +325,46 @@ function App() {
 
     setEditingId(null);
     setCurrentAthlete(initialAthleteState);
+    setCurrentPhotoFile(null);
+    if (photoInputRef.current) photoInputRef.current.value = '';
     setEventSearch('');
   };
 
   const editAthlete = (a) => {
     setEditingId(a.id);
     setCurrentAthlete({ ...a, birthDateStr: formatVietnameseDate(a.birthDate) });
+    setCurrentPhotoFile(null);
     setEventSearch(a.eventName || '');
+  };
+
+  // Reuse an athleteId only when the coach explicitly registers another event
+  // for that same person. Matching names never causes an automatic merge.
+  const addAnotherEventForAthlete = (athlete) => {
+    setEditingId(null);
+    setCurrentPhotoFile(null);
+    setCurrentAthlete({
+      ...athlete,
+      id: undefined,
+      eventId: '',
+      eventName: '',
+      weight: '',
+      isTeam: false,
+      birthDateStr: formatVietnameseDate(athlete.birthDate),
+    });
+    setEventSearch('');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const handlePhotoSelection = (event) => {
+    const file = event.target.files?.[0] || null;
+    const validationError = validatePhotoFile(file);
+    if (validationError) {
+      if (photoInputRef.current) photoInputRef.current.value = '';
+      setCurrentPhotoFile(null);
+      showToast('error', 'Ảnh thẻ không hợp lệ', validationError);
+      return;
+    }
+    setCurrentPhotoFile(file);
   };
 
   const removeAthlete = (id) => {
@@ -341,16 +384,22 @@ function App() {
     }
 
     const additionalCoaches = [coach2.trim(), coach3.trim()].filter(Boolean);
+    const clubId = getOrCreateClubId(clubName.trim());
     const exportDataStr = {
       tournamentId: tournament.tournamentId,
       tournamentName: tournament.tournamentName,
       coachName: coach1.trim() || "Chưa cập nhật",
       clubName: clubName.trim(),
+      clubId,
       teamLeaderName: teamLeader.trim(),
       additionalCoaches: additionalCoaches,
       exportTime: new Date().toISOString(),
+      identityRegistryEnabled: true,
+      submissionStatus: 'pending_admin_review',
       athletes: athletes.map(a => ({
           ...a, 
+          athleteId: a.athleteId || createStableId(),
+          clubId: a.clubId || clubId,
           club: clubName.trim(),
           birthYear: new Date(a.birthDate).getFullYear()
       })),
@@ -445,18 +494,58 @@ function App() {
       
       const additionalCoaches = [coach2.trim(), coach3.trim()].filter(Boolean);
 
+      const clubId = getOrCreateClubId(clubName.trim());
+      const submissionAthletes = athletes.map((athlete) => ({
+        ...athlete,
+        athleteId: athlete.athleteId || createStableId(),
+        clubId: athlete.clubId || clubId,
+        club: clubName.trim(),
+        birthYear: new Date(athlete.birthDate).getFullYear(),
+      }));
+
+      const photosToUpload = [...new Map(
+        submissionAthletes
+          .map((athlete) => [athlete.athleteId, pendingPhotoFilesRef.current.get(athlete.athleteId)])
+          .filter(([, file]) => Boolean(file)),
+      ).entries()];
+      const apiUrl = getKsportApiUrl();
+      if (photosToUpload.length && !apiUrl) {
+        throw new Error('Chưa cấu hình máy chủ K-SPORT để nộp ảnh thẻ. Ảnh chưa được gửi; hãy liên hệ BTC.');
+      }
+
+      const photoResults = new Map();
+      const photoErrors = [];
+      for (const [athleteId, file] of photosToUpload) {
+        const athlete = submissionAthletes.find((item) => item.athleteId === athleteId);
+        try {
+          await uploadPendingRegistrationPhoto({
+            apiUrl,
+            athleteId,
+            tournamentId: tournament.tournamentId,
+            clubId: athlete.clubId,
+            file,
+          });
+          photoResults.set(athleteId, 'pending_admin_review');
+        } catch (photoError) {
+          photoResults.set(athleteId, 'upload_failed');
+          photoErrors.push(`${athlete.name}: ${photoError.message}`);
+        }
+      }
+
       const exportData = {
         tournamentId: tournament.tournamentId,
         tournamentName: tournament.tournamentName,
         coachName: coach1.trim() || "Chưa cập nhật",
         clubName: clubName.trim(),
+        clubId,
         teamLeaderName: teamLeader.trim(),
         additionalCoaches: additionalCoaches,
         exportTime: new Date().toISOString(),
-        athletes: athletes.map(a => ({
-          ...a, 
-          club: clubName.trim(),
-          birthYear: new Date(a.birthDate).getFullYear()
+        identityRegistryEnabled: true,
+        submissionStatus: 'pending_admin_review',
+        athletes: submissionAthletes.map((athlete) => ({
+          ...athlete,
+          photoStatus: photoResults.get(athlete.athleteId) || athlete.photoStatus || 'not_provided',
         })),
         targetRole: 'admin',
       };
@@ -475,8 +564,15 @@ function App() {
         }, { onConflict: 'tournament_id,club_name' });
 
       if (error) throw error;
-      
-      showToast('success', 'Nộp thành công!', `Đã nộp danh sách trực tiếp cho BTC!`);
+
+      setAthletes(exportData.athletes);
+      showToast(
+        'success',
+        'Nộp thành công!',
+        photoErrors.length
+          ? `Đã nộp danh sách. ${photoErrors.length} ảnh chưa tải được; BTC có thể bổ sung sau.`
+          : 'Đã nộp danh sách trực tiếp cho BTC. Ảnh thẻ (nếu có) đang chờ Admin duyệt.',
+      );
     } catch (error) {
       console.error('Supabase submit error:', error);
       showToast('error', 'Lỗi mạng', error.message || "Vui lòng Xuất Excel và gửi cho BTC.");
@@ -740,6 +836,18 @@ function App() {
                     <label className="block text-xs font-semibold text-slate-600 mb-1 line-clamp-1">Cân nặng thực tế {isKumite(currentAthlete.eventId) && <span className="text-red-500">*</span>}</label>
                     <input type="number" step="0.1" value={currentAthlete.weight} onChange={e => setCurrentAthlete({...currentAthlete, weight: e.target.value})} disabled={!isKumite(currentAthlete.eventId)} className="w-full px-3 py-2 border border-slate-300 rounded-md sm:rounded-lg text-sm focus:border-blue-500 outline-none disabled:bg-slate-100" placeholder="0.0" />
                   </div>
+
+                  <div className="sm:col-span-2 md:col-span-12 rounded-xl border border-slate-200 bg-slate-50 p-3">
+                    <label className="flex items-center gap-2 text-sm font-semibold text-slate-700 cursor-pointer">
+                      <ImagePlus className="w-4 h-4 text-blue-600" />
+                      Ảnh thẻ VĐV <span className="font-normal text-slate-500">(tùy chọn · JPG/PNG/WebP · tối đa 5 MB)</span>
+                    </label>
+                    <div className="mt-2 flex flex-col sm:flex-row gap-2 sm:items-center">
+                      <input ref={photoInputRef} type="file" accept="image/jpeg,image/png,image/webp" onChange={handlePhotoSelection} className="block w-full text-sm text-slate-600 file:mr-3 file:rounded-md file:border-0 file:bg-white file:px-3 file:py-2 file:font-semibold file:text-blue-700 hover:file:bg-blue-50" />
+                      {currentPhotoFile && <span className="text-xs font-medium text-emerald-700 whitespace-nowrap">Đã chọn: {currentPhotoFile.name}</span>}
+                    </div>
+                    <p className="mt-2 text-xs text-slate-500">Ảnh chỉ dùng để xác nhận hồ sơ; được lưu riêng tư và không hiển thị công khai trước khi Admin duyệt.</p>
+                  </div>
                   
                   <div className="sm:col-span-2 md:col-span-12 flex flex-col sm:flex-row justify-between items-center gap-3 mt-3 p-3 bg-white rounded-xl border border-slate-200">
                     <label className="flex items-center gap-2 cursor-pointer select-none">
@@ -768,6 +876,7 @@ function App() {
                       <th className="px-3 sm:px-4 py-3 font-semibold text-center text-xs sm:text-sm">Năm sinh</th>
                       <th className="px-3 sm:px-4 py-3 font-semibold text-xs sm:text-sm">Nội dung</th>
                       <th className="px-3 sm:px-4 py-3 font-semibold text-center text-xs sm:text-sm w-16">Kg</th>
+                      <th className="px-3 sm:px-4 py-3 font-semibold text-center text-xs sm:text-sm">Ảnh thẻ</th>
                       <th className="px-3 sm:px-4 py-3 font-semibold text-center text-xs sm:text-sm">Đồng Đội</th>
                       <th className="px-3 sm:px-4 py-3 font-semibold text-center text-xs sm:text-sm w-20">Thao tác</th>
                     </tr>
@@ -775,7 +884,7 @@ function App() {
                   <tbody>
                     {athletes.length === 0 ? (
                       <tr>
-                        <td colSpan="7" className="px-4 py-10 text-center text-slate-400 font-medium">Chưa có VĐV nào được thêm.</td>
+                        <td colSpan="9" className="px-4 py-10 text-center text-slate-400 font-medium">Chưa có VĐV nào được thêm.</td>
                       </tr>
                     ) : (
                       athletes.map((a, i) => (
@@ -789,9 +898,13 @@ function App() {
                           </td>
                           <td className="px-3 sm:px-4 py-2 sm:py-3 text-center font-medium opacity-80">{a.weight ? a.weight : '-'}</td>
                           <td className="px-3 sm:px-4 py-2 sm:py-3 text-center">
+                            {a.photoStatus === 'pending_admin_review' ? <span className="text-xs font-bold text-amber-700">Chờ duyệt</span> : a.photoStatus === 'pending_upload' ? <span className="text-xs font-bold text-blue-700">Chờ nộp</span> : a.photoStatus === 'upload_failed' ? <span className="text-xs font-bold text-red-600">Lỗi tải</span> : <span className="text-slate-300">-</span>}
+                          </td>
+                          <td className="px-3 sm:px-4 py-2 sm:py-3 text-center">
                             {a.isTeam ? <span className="bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded text-xs font-bold">✓ Có</span> : <span className="text-slate-300">-</span>}
                           </td>
                           <td className="px-3 sm:px-4 py-2 sm:py-3 text-center flex justify-center gap-1 sm:gap-2 mt-1">
+                            <button onClick={() => addAnotherEventForAthlete(a)} className="text-emerald-600 hover:text-emerald-800 hover:bg-emerald-50 p-1.5 rounded-lg transition-colors" title="Đăng ký thêm nội dung cho cùng VĐV"><Plus className="w-4 h-4" /></button>
                             <button onClick={() => editAthlete(a)} className="text-blue-500 hover:text-blue-700 hover:bg-blue-50 p-1.5 rounded-lg transition-colors" title="Sửa"><Edit2 className="w-4 h-4" /></button>
                             <button onClick={() => removeAthlete(a.id)} className="text-red-500 hover:text-red-700 hover:bg-red-50 p-1.5 rounded-lg transition-colors" title="Xóa"><Trash2 className="w-4 h-4" /></button>
                           </td>
